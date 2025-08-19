@@ -79,7 +79,7 @@ def get_customer_name(customer_id):
 # ----------------------------
 st.title("☕ Cafe Central")
 
-menu_choice = st.sidebar.radio("Navigation", ["Home", "Customer", "Admin"])
+menu_choice = st.sidebar.radio("Navigation", ["Customer", "Admin"])
 
 # ----------------------------
 # Customer Section
@@ -311,3 +311,4 @@ elif menu_choice == "Admin":
         else:
             st.info("No reviews submitted yet.")
                                     
+
