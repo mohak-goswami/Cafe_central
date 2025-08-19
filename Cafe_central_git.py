@@ -105,19 +105,7 @@ with col2:
             st.success(f"Welcome back, {user[1]}!")
         else:
             st.error("Invalid Customer ID.")
-
-with col3:
-    st.subheader("Admin Login")
-    admin_pass = st.text_input("Password", type="password")
-    if st.button("Admin Login"):
-        if admin_pass == "admin123":
-            st.session_state.role = "Admin"
-            st.session_state.logged_in = True
-            st.success("Admin logged in.")
-        else:
-            st.error("Wrong password.")
-
-# ----------------------------
+#-----------------------------
 # Customer Dashboard
 # ----------------------------
 if st.session_state.role == "Customer" and st.session_state.logged_in:
@@ -240,3 +228,4 @@ if st.session_state.role == "Admin" and st.session_state.logged_in:
     else:
         st.info("No reviews yet.")
         
+
