@@ -1,5 +1,3 @@
-# cafe_streamlit.py
-
 import streamlit as st
 import sqlite3
 from datetime import datetime
@@ -10,11 +8,12 @@ from datetime import datetime
 conn = sqlite3.connect("cafe_central.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# Create tables if they don’t exist
 cursor.executescript("""
 CREATE TABLE IF NOT EXISTS customers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT,
-    phone TEXT UNIQUE
+    phone TEXT
 );
 
 CREATE TABLE IF NOT EXISTS menu (
@@ -26,206 +25,144 @@ CREATE TABLE IF NOT EXISTS menu (
 CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_id INTEGER,
-    item_id INTEGER,
+    menu_id INTEGER,
     quantity INTEGER,
     order_time TEXT,
     FOREIGN KEY(customer_id) REFERENCES customers(id),
-    FOREIGN KEY(item_id) REFERENCES menu(id)
-);
-
-CREATE TABLE IF NOT EXISTS reviews (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    customer_id INTEGER,
-    item_id INTEGER,
-    rating INTEGER,
-    review TEXT,
-    review_time TEXT,
-    FOREIGN KEY(customer_id) REFERENCES customers(id),
-    FOREIGN KEY(item_id) REFERENCES menu(id)
+    FOREIGN KEY(menu_id) REFERENCES menu(id)
 );
 """)
 conn.commit()
 
 # ----------------------------
-# Session State Initialization
+# Customer Registration / Login
 # ----------------------------
-default_states = {
-    "role": None,
-    "customer_id": None,
-    "cart": [],
-    "logged_in": False
-}
-for key, value in default_states.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
+def customer_page():
+    st.header("Customer Page")
 
-# ----------------------------
-# Helper Functions
-# ----------------------------
-def place_order(customer_id, item_id, qty):
-    cursor.execute(
-        "INSERT INTO orders (customer_id, item_id, quantity, order_time) VALUES (?, ?, ?, ?)",
-        (customer_id, item_id, qty, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-    )
-    conn.commit()
-
-# ----------------------------
-# Customer Registration/Login
-# ----------------------------
-st.title("☕ Cafe Central")
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.subheader("New Customer Registration")
-    new_name = st.text_input("Name", key="reg_name")
-    new_phone = st.text_input("Phone", key="reg_phone")
+    # Register new customer
+    st.subheader("Register New Customer")
+    name = st.text_input("Name")
+    phone = st.text_input("Phone")
     if st.button("Register"):
-        if new_name.strip() and new_phone.strip():
-            try:
-                cursor.execute("INSERT INTO customers (name, phone) VALUES (?, ?)", (new_name, new_phone))
-                conn.commit()
-                customer_id = cursor.lastrowid
-                st.success(f"Registration successful! Your Customer ID is **{customer_id}**. Please use this to log in.")
-            except sqlite3.IntegrityError:
-                st.error("Phone already registered.")
+        if name and phone:
+            cursor.execute("INSERT INTO customers (name, phone) VALUES (?, ?)", (name, phone))
+            conn.commit()
+            st.success("Registration successful! Please note your Customer ID.")
+            cursor.execute("SELECT id FROM customers WHERE phone=?", (phone,))
+            customer_id = cursor.fetchone()[0]
+            st.info(f"Your Customer ID is: {customer_id}")
         else:
-            st.warning("Fill all fields.")
+            st.error("Please enter both name and phone.")
 
-with col2:
+    # Existing customer login
     st.subheader("Existing Customer Login")
-    cust_id_input = st.number_input("Customer ID", min_value=1, step=1, key="login_id")
+    cust_id = st.number_input("Customer ID", min_value=1, step=1)
     if st.button("Login"):
-        cursor.execute("SELECT id, name FROM customers WHERE id=?", (cust_id_input,))
-        user = cursor.fetchone()
-        if user:
-            st.session_state.role = "Customer"
-            st.session_state.customer_id = user[0]
-            st.session_state.logged_in = True
-            st.success(f"Welcome back, {user[1]}!")
+        cursor.execute("SELECT * FROM customers WHERE id=?", (cust_id,))
+        if cursor.fetchone():
+            st.session_state.customer_id = cust_id
+            st.success(f"Logged in as Customer ID: {cust_id}")
         else:
             st.error("Invalid Customer ID.")
-#-----------------------------
-# Customer Dashboard
+
+    # Only show options if logged in
+    if "customer_id" in st.session_state:
+        st.subheader("Place an Order")
+
+        cursor.execute("SELECT * FROM menu")
+        menu_items = cursor.fetchall()
+
+        if menu_items:
+            for item in menu_items:
+                qty = st.number_input(f"{item[1]} (₹{item[2]})", min_value=0, step=1, key=f"order_{item[0]}")
+                if qty > 0 and st.button(f"Order {item[1]}", key=f"btn_{item[0]}"):
+                    cursor.execute(
+                        "INSERT INTO orders (customer_id, menu_id, quantity, order_time) VALUES (?, ?, ?, ?)",
+                        (st.session_state.customer_id, item[0], qty, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    )
+                    conn.commit()
+                    st.success(f"Ordered {qty} x {item[1]}")
+
+        # Show past orders (FIXED: only runs if logged in)
+        st.subheader("Your Orders")
+        cursor.execute("""
+            SELECT orders.id, menu.name, orders.quantity, orders.order_time
+            FROM orders
+            JOIN menu ON orders.menu_id = menu.id
+            WHERE orders.customer_id = ?
+            ORDER BY orders.order_time DESC
+        """, (st.session_state.customer_id,))
+        customer_orders = cursor.fetchall()
+
+        if customer_orders:
+            for order in customer_orders:
+                st.write(f"Order ID: {order[0]} | Item: {order[1]} | Quantity: {order[2]} | Time: {order[3]}")
+        else:
+            st.info("You haven’t placed any orders yet.")
+
+
 # ----------------------------
-if st.session_state.role == "Customer" and st.session_state.logged_in:
-    st.header("Menu")
+# Admin Page
+# ----------------------------
+def admin_page():
+    st.header("Admin Page")
 
-    cursor.execute("SELECT id, name, price FROM menu")
-    menu_items = cursor.fetchall()
+    password = st.text_input("Password", type="password")
+    if st.button("Admin Login"):
+        if password == "admin123":
+            st.session_state.admin = True
+        else:
+            st.error("Wrong password")
 
-    for item in menu_items:
-        colA, colB, colC, colD = st.columns([3, 2, 2, 2])
-        with colA:
-            st.write(f"**{item[1]}** (₹{item[2]})")
-        with colB:
-            qty = st.number_input(f"Qty_{item[0]}", min_value=1, step=1, value=1, label_visibility="collapsed")
-        with colC:
-            if st.button("Order", key=f"order_{item[0]}"):
-                place_order(st.session_state.customer_id, item[0], qty)
-                st.success("Order placed!")
-        with colD:
-            cursor.execute("SELECT AVG(rating) FROM reviews WHERE item_id=?", (item[0],))
-            avg_rating = cursor.fetchone()[0]
-            if avg_rating:
-                st.write(f"⭐ {round(avg_rating,1)}")
+    if "admin" in st.session_state and st.session_state.admin:
+        st.subheader("Menu Management")
 
-        with st.expander(f"Leave a Review for {item[1]}"):
-            rating = st.slider(f"Rating_{item[0]}", 1, 5, 5)
-            review_text = st.text_area(f"Review_{item[0]}", "")
-            if st.button(f"Submit Review_{item[0]}"):
-                cursor.execute(
-                    "INSERT INTO reviews (customer_id, item_id, rating, review, review_time) VALUES (?, ?, ?, ?, ?)",
-                    (st.session_state.customer_id, item[0], rating, review_text, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                )
+        # Add menu item
+        name = st.text_input("Item Name")
+        price = st.number_input("Price", min_value=0.0, step=0.5)
+        if st.button("Add Item"):
+            if name and price:
+                cursor.execute("INSERT INTO menu (name, price) VALUES (?, ?)", (name, price))
                 conn.commit()
-                st.success("Review submitted!")
+                st.success("Item added")
 
-    st.header("Your Order History")
-    cursor.execute("""
-        SELECT orders.id, menu.name, orders.quantity, orders.order_time
-        FROM orders
-        JOIN menu ON orders.item_id = menu.id
-        WHERE orders.customer_id=?
-        ORDER BY orders.order_time DESC
-    """, (st.session_state.customer_id,))
-    past_orders = cursor.fetchall()
+        # Update menu item
+        cursor.execute("SELECT * FROM menu")
+        menu_items = cursor.fetchall()
+        if menu_items:
+            st.subheader("Update Menu Item")
+            menu_id = st.selectbox("Select Item", [item[0] for item in menu_items])
+            new_price = st.number_input("New Price", min_value=0.0, step=0.5)
+            if st.button("Update Price"):
+                cursor.execute("UPDATE menu SET price=? WHERE id=?", (new_price, menu_id))
+                conn.commit()
+                st.success("Price updated")
 
-    if past_orders:
-        for order in past_orders:
-            col1, col2, col3 = st.columns([3, 2, 2])
-            with col1:
-                st.write(f"**{order[1]}** × {order[2]}")
-            with col2:
-                st.write(order[3])
-            with col3:
-                if st.button("Reorder", key=f"reorder_{order[0]}"):
-                    cursor.execute("SELECT item_id, quantity FROM orders WHERE id=?", (order[0],))
-                    old = cursor.fetchone()
-                    place_order(st.session_state.customer_id, old[0], old[1])
-                    st.success("Order placed again!")
-    else:
-        st.info("No past orders.")
+        # Show orders
+        st.subheader("All Orders")
+        cursor.execute("""
+            SELECT orders.id, customers.name, menu.name, orders.quantity, orders.order_time
+            FROM orders
+            JOIN customers ON orders.customer_id = customers.id
+            JOIN menu ON orders.menu_id = menu.id
+            ORDER BY orders.order_time DESC
+        """)
+        all_orders = cursor.fetchall()
+        if all_orders:
+            for order in all_orders:
+                st.write(f"Order ID: {order[0]} | Customer: {order[1]} | Item: {order[2]} | Quantity: {order[3]} | Time: {order[4]}")
+        else:
+            st.info("No orders yet.")
+
 
 # ----------------------------
-# Admin Dashboard
+# Page Selection
 # ----------------------------
-if st.session_state.role == "Admin" and st.session_state.logged_in:
-    st.header("Manage Menu")
+page = st.sidebar.radio("Select Page", ["Customer", "Admin"])
 
-    st.subheader("Add Menu Item")
-    item_name = st.text_input("Item Name")
-    item_price = st.number_input("Price", min_value=1.0, step=1.0)
-    if st.button("Add Item"):
-        if item_name.strip():
-            cursor.execute("INSERT INTO menu (name, price) VALUES (?, ?)", (item_name, item_price))
-            conn.commit()
-            st.success("Item added!")
-
-    st.subheader("Update Menu Item")
-    cursor.execute("SELECT id, name, price FROM menu")
-    menu_items = cursor.fetchall()
-    if menu_items:
-        item_dict = {f"{m[1]} (₹{m[2]})": m[0] for m in menu_items}
-        selected_item = st.selectbox("Select Item", list(item_dict.keys()))
-        new_name = st.text_input("New Name")
-        new_price = st.number_input("New Price", min_value=1.0, step=1.0)
-        if st.button("Update Item"):
-            item_id = item_dict[selected_item]
-            if new_name.strip():
-                cursor.execute("UPDATE menu SET name=? WHERE id=?", (new_name, item_id))
-            if new_price:
-                cursor.execute("UPDATE menu SET price=? WHERE id=?", (new_price, item_id))
-            conn.commit()
-            st.success("Item updated!")
-    else:
-        st.info("Menu is empty.")
-
-    st.subheader("Delete Menu Item")
-    cursor.execute("SELECT id, name FROM menu")
-    items = cursor.fetchall()
-    if items:
-        item_dict = {m[1]: m[0] for m in items}
-        del_item = st.selectbox("Select Item to Delete", list(item_dict.keys()))
-        if st.button("Delete Item"):
-            cursor.execute("DELETE FROM menu WHERE id=?", (item_dict[del_item],))
-            conn.commit()
-            st.success("Item deleted!")
-    else:
-        st.info("No items to delete.")
-
-    st.subheader("Item Ratings & Reviews")
-    cursor.execute("""
-        SELECT menu.name, AVG(reviews.rating), COUNT(reviews.id)
-        FROM reviews
-        JOIN menu ON reviews.item_id = menu.id
-        GROUP BY menu.id
-    """)
-    ratings = cursor.fetchall()
-    if ratings:
-        for r in ratings:
-            st.write(f"**{r[0]}** → ⭐ {round(r[1],1)} ({r[2]} reviews)")
-    else:
-        st.info("No reviews yet.")
-        
-
+if page == "Customer":
+    customer_page()
+elif page == "Admin":
+    admin_page()
+    
