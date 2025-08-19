@@ -1,25 +1,9 @@
-# streamlit_app.py
+# cafe_streamlit.py
+
 import streamlit as st
 import sqlite3
-from datetime import datetime
 import pandas as pd
-
-# ----------------------------
-# Basic Page Setup
-# ----------------------------
-st.set_page_config(page_title="Cafe Central", page_icon="☕", layout="wide")
-st.title("☕ Cafe Central Management System")
-
-# ----------------------------
-# Session State Initialization
-# ----------------------------
-DEFAULT_STATE = {
-    "customer_id": None,
-    "order": [],   # list of tuples: (item_id, qty, subtotal)
-}
-for k, v in DEFAULT_STATE.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+from datetime import datetime
 
 # ----------------------------
 # Database Setup
@@ -31,24 +15,21 @@ cursor.executescript("""
 CREATE TABLE IF NOT EXISTS customers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    phone TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    phone TEXT UNIQUE NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS menu (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    category TEXT NOT NULL,
     price REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_id INTEGER NOT NULL,
-    date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    order_date TEXT NOT NULL,
     upi_number TEXT,
-    FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+    FOREIGN KEY (customer_id) REFERENCES customers(id)
 );
 
 CREATE TABLE IF NOT EXISTS order_items (
@@ -56,335 +37,277 @@ CREATE TABLE IF NOT EXISTS order_items (
     order_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
     quantity INTEGER NOT NULL,
-    total_price REAL NOT NULL,
-    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
-    FOREIGN KEY (item_id) REFERENCES menu(id) ON DELETE CASCADE
+    FOREIGN KEY (order_id) REFERENCES orders(id),
+    FOREIGN KEY (item_id) REFERENCES menu(id)
 );
 
 CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_id INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
-    rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
-    review TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
-    FOREIGN KEY (item_id) REFERENCES menu(id) ON DELETE CASCADE
+    rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
+    review_text TEXT,
+    FOREIGN KEY (customer_id) REFERENCES customers(id),
+    FOREIGN KEY (item_id) REFERENCES menu(id)
 );
 """)
 conn.commit()
 
-# Small helpers
-def df_from_rows(rows, cols):
-    return pd.DataFrame(rows, columns=cols)
-
-def money(x):
-    return f"₹{x:.2f}"
+# ----------------------------
+# Session State Initialization
+# ----------------------------
+default_states = {
+    "role": None,
+    "customer_id": None,
+    "cart": [],
+    "logged_in": False
+}
+for key, value in default_states.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 # ----------------------------
-# Role Picker
+# Helper Functions
 # ----------------------------
-role = st.sidebar.radio("Login as:", ["Customer", "Admin"])
+def get_customer_name(customer_id):
+    cursor.execute("SELECT name FROM customers WHERE id=?", (customer_id,))
+    row = cursor.fetchone()
+    return row[0] if row else "Unknown"
 
-# =========================================================
-# Admin Section
-# =========================================================
-if role == "Admin":
-    st.header("🔑 Admin Dashboard")
-    choice = st.sidebar.selectbox("Choose an action", [
-        "View Customers",
-        "View Orders",
-        "Manage Menu",
-        "View Sales Report"
-    ])
+# ----------------------------
+# UI
+# ----------------------------
+st.title("☕ Cafe Central")
 
-    # ---- View Customers ----
-    if choice == "View Customers":
-        st.subheader("👥 Customers List")
-        customers = cursor.execute("SELECT id, name, phone, email, created_at FROM customers").fetchall()
-        if customers:
-            df = df_from_rows(customers, ["Customer ID", "Name", "Phone", "Email", "Created At"])
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.info("No customers found.")
+menu_choice = st.sidebar.radio("Navigation", ["Home", "Customer", "Admin"])
 
-    # ---- View Orders ----
-    elif choice == "View Orders":
-        st.subheader("🛒 Orders List")
-        orders = cursor.execute("SELECT id, customer_id, date, upi_number FROM orders ORDER BY date DESC").fetchall()
-        if orders:
-            df = df_from_rows(orders, ["Order ID", "Customer ID", "Date", "UPI Number"])
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.info("No orders placed yet.")
-
-    # ---- Manage Menu (with Avg Rating) ----
-    elif choice == "Manage Menu":
-        st.subheader("📋 Manage Menu")
-        menu_items = cursor.execute("SELECT id, name, category, price FROM menu ORDER BY id").fetchall()
-        if menu_items:
-            # Enrich with avg rating
-            enriched = []
-            for m in menu_items:
-                ratings = cursor.execute("SELECT rating FROM reviews WHERE item_id = ?", (m[0],)).fetchall()
-                avg = round(sum(r[0] for r in ratings) / len(ratings), 1) if ratings else None
-                enriched.append([m[0], m[1], m[2], m[3], (f"{avg} ⭐" if avg is not None else "—")])
-            df = df_from_rows(enriched, ["Item ID", "Name", "Category", "Price", "Avg Rating"])
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.info("Menu is empty.")
-
-        st.markdown("---")
-        action = st.radio("Choose Action:", ["Add Item", "Remove Item", "Update Item"], horizontal=True)
-
-        if action == "Add Item":
-            with st.form("add_item_form"):
-                name = st.text_input("Item Name")
-                category = st.text_input("Category")
-                price = st.number_input("Price", min_value=0.0, format="%.2f")
-                submitted = st.form_submit_button("Add Item")
-                if submitted:
-                    if name and category:
-                        cursor.execute("INSERT INTO menu (name, category, price) VALUES (?, ?, ?)",
-                                       (name, category, price))
-                        conn.commit()
-                        st.success(f"Added '{name}' to the menu!")
-                    else:
-                        st.error("Please fill all fields.")
-
-        elif action == "Remove Item":
-            with st.form("remove_item_form"):
-                item_id = st.number_input("Enter Item ID to remove", min_value=1, step=1)
-                submitted = st.form_submit_button("Remove Item")
-                if submitted:
-                    cursor.execute("DELETE FROM menu WHERE id = ?", (item_id,))
-                    conn.commit()
-                    st.warning(f"Item with ID {item_id} removed (if it existed).")
-
-        elif action == "Update Item":
-            with st.form("load_item_form"):
-                item_id = st.number_input("Enter Item ID to update", min_value=1, step=1)
-                load = st.form_submit_button("Load Item")
-            if load:
-                item = cursor.execute("SELECT id, name, category, price FROM menu WHERE id = ?", (item_id,)).fetchone()
-                if item:
-                    with st.form("update_item_form"):
-                        new_name = st.text_input("Item Name", item[1])
-                        new_category = st.text_input("Category", item[2])
-                        new_price = st.number_input("Price", value=float(item[3]), format="%.2f")
-                        submitted = st.form_submit_button("Update Item")
-                        if submitted:
-                            cursor.execute("UPDATE menu SET name=?, category=?, price=? WHERE id=?",
-                                           (new_name, new_category, new_price, item_id))
-                            conn.commit()
-                            st.success("Item updated successfully.")
-                else:
-                    st.error("Item not found.")
-
-    # ---- Sales Reports ----
-    elif choice == "View Sales Report":
-        # Monthly
-        st.subheader("📊 Monthly Sales Report")
-        monthly = cursor.execute("""
-            SELECT strftime('%Y-%m', o.date) AS ym, SUM(oi.total_price) AS total_sales
-            FROM order_items oi
-            JOIN orders o ON oi.order_id = o.id
-            GROUP BY ym
-            ORDER BY ym
-        """).fetchall()
-        if monthly:
-            dfm = df_from_rows(monthly, ["Month", "Total Sales"])
-            st.dataframe(dfm, use_container_width=True)
-            chart_dfm = dfm.set_index("Month")
-            st.bar_chart(chart_dfm)
-        else:
-            st.info("No sales data available yet.")
-
-        # Daily
-        st.subheader("📅 Daily Sales Report")
-        daily = cursor.execute("""
-            SELECT strftime('%Y-%m-%d', o.date) AS day, SUM(oi.total_price) AS total_sales
-            FROM order_items oi
-            JOIN orders o ON oi.order_id = o.id
-            GROUP BY day
-            ORDER BY day
-        """).fetchall()
-        if daily:
-            dfd = df_from_rows(daily, ["Date", "Total Sales"])
-            st.dataframe(dfd, use_container_width=True)
-            chart_dfd = dfd.set_index("Date")
-            st.bar_chart(chart_dfd)
-        else:
-            st.info("No daily sales data yet.")
-
-# =========================================================
+# ----------------------------
 # Customer Section
-# =========================================================
-elif role == "Customer":
-    st.header("👤 Customer Portal")
+# ----------------------------
+if menu_choice == "Customer":
+    st.header("Customer Section")
 
-    # ---- New Registration ----
-    st.subheader("🆕 New Customer Registration")
-    with st.form("register_form"):
+    action = st.radio("Choose an option", ["New Customer Registration", "Existing Customer Login"])
+
+    if action == "New Customer Registration":
+        st.subheader("📝 New Customer Registration")
         name = st.text_input("Name")
-        phone = st.text_input("Phone")
-        email = st.text_input("Email")
-        register_btn = st.form_submit_button("Register")
-        if register_btn:
-            if name and phone and email:
+        phone = st.text_input("Phone Number")
+
+        if st.button("Register"):
+            if name and phone:
                 try:
-                    cursor.execute("INSERT INTO customers (name, phone, email) VALUES (?, ?, ?)",
-                                   (name, phone, email))
+                    cursor.execute("INSERT INTO customers (name, phone) VALUES (?, ?)", (name, phone))
                     conn.commit()
-                    customer_id = cursor.lastrowid
-                    st.success(f"Registered successfully! Your Customer ID is {customer_id}")
+                    st.success("Registration successful! Please login now.")
                 except sqlite3.IntegrityError:
-                    st.error("Email already exists. Try logging in or use another email.")
+                    st.error("Phone number already registered.")
             else:
-                st.error("Please fill all fields.")
+                st.warning("Please fill all fields.")
 
-    st.markdown("---")
+    elif action == "Existing Customer Login":
+        st.subheader("🔑 Existing Customer Login")
+        phone = st.text_input("Enter your Phone Number to Login")
 
-    # ---- Existing Login ----
-    st.subheader("🔑 Existing Customer Login")
-    if st.session_state.customer_id is None:
-        with st.form("login_form"):
-            customer_id_input = st.number_input("Enter Customer ID", min_value=1, step=1)
-            login_btn = st.form_submit_button("Login")
-        if login_btn:
-            customer = cursor.execute("SELECT id, name FROM customers WHERE id = ?",
-                                      (customer_id_input,)).fetchone()
+        if st.button("Login"):
+            cursor.execute("SELECT id FROM customers WHERE phone=?", (phone,))
+            customer = cursor.fetchone()
             if customer:
                 st.session_state.customer_id = customer[0]
-                st.success(f"Welcome back, {customer[1]}!")
+                st.session_state.logged_in = True
+                st.success("Login successful!")
             else:
-                st.error("Invalid Customer ID.")
+                st.error("Customer not found. Please register first.")
 
-    # ---- Logged-in Area ----
-    if st.session_state.customer_id is not None:
-        customer = cursor.execute("SELECT id, name FROM customers WHERE id = ?",
-                                  (st.session_state.customer_id,)).fetchone()
-        if customer:
-            st.success(f"Welcome back, {customer[1]}!")
+    # If logged in
+    if st.session_state.logged_in and st.session_state.customer_id:
+        st.success(f"Welcome, {get_customer_name(st.session_state.customer_id)}! 🎉")
 
-        # Ensure order list exists
-        if "order" not in st.session_state:
-            st.session_state.order = []
+        customer_tab = st.radio("Choose Action", ["Menu", "Cart", "Order History", "Reviews"])
 
-        # -------- Menu + Cart Form --------
-        menu_items = cursor.execute("SELECT id, name, category, price FROM menu ORDER BY id").fetchall()
-        if menu_items:
-            st.subheader("🍽️ Menu")
-            with st.form("menu_form"):
-                order_quantities = {}
-                for item in menu_items:
-                    order_quantities[item[0]] = st.number_input(
-                        f"{item[1]} ({money(item[3])})", min_value=0, step=1, key=f"item_{item[0]}"
-                    )
-                submit_order = st.form_submit_button("Update Cart")
+        # ---------------- Menu ----------------
+        if customer_tab == "Menu":
+            cursor.execute("SELECT id, name, price FROM menu")
+            items = cursor.fetchall()
+            if items:
+                df_menu = pd.DataFrame(items, columns=["Item ID", "Name", "Price"])
+                st.table(df_menu)
 
-            # Build cart from selections
-            st.session_state.order = []
-            total_amount = 0.0
-            summary_rows = []
-            for item_id, qty in order_quantities.items():
-                if qty > 0:
-                    price, name = cursor.execute(
-                        "SELECT price, name FROM menu WHERE id = ?", (item_id,)
-                    ).fetchone()
-                    subtotal = price * qty
-                    st.session_state.order.append((item_id, qty, subtotal))
-                    summary_rows.append([name, qty, money(subtotal)])
-                    total_amount += subtotal
+                item_id = st.number_input("Enter Item ID to Add to Cart", min_value=1, step=1)
+                qty = st.number_input("Quantity", min_value=1, step=1)
 
-            if st.session_state.order:
-                st.markdown("---")
-                st.subheader("📝 Order Summary")
-                st.dataframe(df_from_rows(summary_rows, ["Item", "Qty", "Subtotal"]),
-                             use_container_width=True)
-                st.write(f"**Total: {money(total_amount)}**")
-
-                if st.button("Place Order"):
-                    cursor.execute("INSERT INTO orders (customer_id, date) VALUES (?, ?)",
-                                   (st.session_state.customer_id, datetime.now()))
-                    new_order_id = cursor.lastrowid
-                    for item_id, qty, subtotal in st.session_state.order:
-                        cursor.execute(
-                            "INSERT INTO order_items (order_id, item_id, quantity, total_price) VALUES (?, ?, ?, ?)",
-                            (new_order_id, item_id, qty, subtotal)
-                        )
-                    conn.commit()
-                    st.success(f"✅ Order placed successfully! Your Order ID is {new_order_id}")
-                    st.session_state.order = []
-
-            # -------- Ratings & Reviews --------
-            st.markdown("---")
-            st.subheader("⭐ Rate & Review Menu Items")
-            for item in menu_items:
-                with st.expander(f"{item[1]} ({money(item[3])})"):
-                    st.caption(f"Category: {item[2]}")
-                    revs = cursor.execute(
-                        "SELECT rating, review, created_at FROM reviews WHERE item_id = ? ORDER BY created_at DESC",
-                        (item[0],)
-                    ).fetchall()
-                    if revs:
-                        avg = round(sum(r[0] for r in revs) / len(revs), 1)
-                        st.write(f"**Average Rating:** {avg} ⭐ ({len(revs)} reviews)")
-                        hist_df = df_from_rows(revs, ["Rating", "Review", "When"])
-                        st.dataframe(hist_df, use_container_width=True, height=200)
+                if st.button("Add to Cart"):
+                    cursor.execute("SELECT id FROM menu WHERE id=?", (item_id,))
+                    if cursor.fetchone():
+                        st.session_state.cart.append((item_id, qty))
+                        st.success("Item added to cart!")
                     else:
-                        st.write("No reviews yet.")
+                        st.error("Invalid Item ID.")
+            else:
+                st.info("No items available in menu.")
 
-                    with st.form(f"review_form_{item[0]}"):
-                        rating = st.slider("Rating (1-5)", 1, 5, 5, key=f"rate_{item[0]}")
-                        review_text = st.text_area("Write a review", key=f"text_{item[0]}")
-                        submit_review = st.form_submit_button("Submit Review")
-                        if submit_review:
-                            cursor.execute(
-                                "INSERT INTO reviews (customer_id, item_id, rating, review) VALUES (?, ?, ?, ?)",
-                                (st.session_state.customer_id, item[0], rating, review_text.strip())
-                            )
-                            conn.commit()
-                            st.success("Thank you for your review!")
+        # ---------------- Cart ----------------
+        elif customer_tab == "Cart":
+            st.subheader("🛒 Your Cart")
+            if st.session_state.cart:
+                cart_items = []
+                total = 0
+                for item_id, qty in st.session_state.cart:
+                    cursor.execute("SELECT name, price FROM menu WHERE id=?", (item_id,))
+                    item = cursor.fetchone()
+                    if item:
+                        name, price = item
+                        subtotal = price * qty
+                        total += subtotal
+                        cart_items.append([name, qty, price, subtotal])
 
-            # -------- Order History + Direct Reorder --------
-            st.markdown("---")
-            st.subheader("📜 Your Order History")
-            past_orders = cursor.execute("""
-                SELECT o.id, o.date, COALESCE(SUM(oi.total_price), 0)
-                FROM orders o
-                LEFT JOIN order_items oi ON oi.order_id = o.id
-                WHERE o.customer_id = ?
-                GROUP BY o.id
-                ORDER BY o.date DESC
-            """, (st.session_state.customer_id,)).fetchall()
+                df_cart = pd.DataFrame(cart_items, columns=["Item", "Quantity", "Price", "Subtotal"])
+                st.table(df_cart)
+                st.write(f"**Total: ₹{total}**")
 
-            if past_orders:
-                hist_df = df_from_rows(past_orders, ["Order ID", "Date", "Total"])
-                hist_df["Total"] = hist_df["Total"].apply(money)
-                st.dataframe(hist_df, use_container_width=True)
+                upi_number = st.text_input("Enter UPI Number for Payment")
+                if st.button("Place Order"):
+                    order_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    cursor.execute("INSERT INTO orders (customer_id, order_date, upi_number) VALUES (?, ?, ?)",
+                                   (st.session_state.customer_id, order_date, upi_number))
+                    order_id = cursor.lastrowid
+                    for item_id, qty in st.session_state.cart:
+                        cursor.execute("INSERT INTO order_items (order_id, item_id, quantity) VALUES (?, ?, ?)",
+                                       (order_id, item_id, qty))
+                    conn.commit()
+                    st.session_state.cart = []
+                    st.success("Order placed successfully!")
+            else:
+                st.info("Your cart is empty.")
 
-                for order_id, date, total in past_orders:
-                    if st.button(f"Reorder {order_id}", key=f"reorder_{order_id}"):
-                        items = cursor.execute("""
-                            SELECT item_id, quantity, total_price
-                            FROM order_items
-                            WHERE order_id = ?
-                        """, (order_id,)).fetchall()
+        # ---------------- Order History ----------------
+        elif customer_tab == "Order History":
+            cursor.execute("SELECT id, order_date, upi_number FROM orders WHERE customer_id=?",
+                           (st.session_state.customer_id,))
+            orders = cursor.fetchall()
+            if orders:
+                df_orders = pd.DataFrame(orders, columns=["Order ID", "Date", "UPI Number"])
+                st.table(df_orders)
 
-                        # Place new order directly (copy items and their stored subtotals)
-                        cursor.execute("INSERT INTO orders (customer_id, date) VALUES (?, ?)",
-                                       (st.session_state.customer_id, datetime.now()))
+                order_id = st.number_input("Enter Order ID to Reorder", min_value=1, step=1)
+                if st.button("Reorder"):
+                    cursor.execute("SELECT item_id, quantity FROM order_items WHERE order_id=?", (order_id,))
+                    past_items = cursor.fetchall()
+                    if past_items:
+                        order_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        cursor.execute("INSERT INTO orders (customer_id, order_date, upi_number) VALUES (?, ?, ?)",
+                                       (st.session_state.customer_id, order_date, "Reorder"))
                         new_order_id = cursor.lastrowid
-                        for item_id, qty, subtotal in items:
-                            cursor.execute(
-                                "INSERT INTO order_items (order_id, item_id, quantity, total_price) VALUES (?, ?, ?, ?)",
-                                (new_order_id, item_id, qty, subtotal)
-                            )
+                        for item_id, qty in past_items:
+                            cursor.execute("INSERT INTO order_items (order_id, item_id, quantity) VALUES (?, ?, ?)",
+                                           (new_order_id, item_id, qty))
                         conn.commit()
-                        st.success(f"✅ Order {new_order_id} placed! (Reordered from {order_id})")
+                        st.success("Reorder placed successfully!")
+                    else:
+                        st.error("Invalid Order ID.")
             else:
                 st.info("No past orders found.")
 
+        # ---------------- Reviews ----------------
+        elif customer_tab == "Reviews":
+            st.subheader("⭐ Rate & Review Items")
+            cursor.execute("SELECT id, name FROM menu")
+            menu_items = cursor.fetchall()
+            if menu_items:
+                item_dict = {item[1]: item[0] for item in menu_items}
+                selected_item = st.selectbox("Select Item", list(item_dict.keys()))
+                rating = st.slider("Rating", 1, 5, 3)
+                review_text = st.text_area("Write a Review")
+
+                if st.button("Submit Review"):
+                    cursor.execute("INSERT INTO reviews (customer_id, item_id, rating, review_text) VALUES (?, ?, ?, ?)",
+                                   (st.session_state.customer_id, item_dict[selected_item], rating, review_text))
+                    conn.commit()
+                    st.success("Review submitted successfully!")
+            else:
+                st.info("No items available to review.")
+
+# ----------------------------
+# Admin Section
+# ----------------------------
+elif menu_choice == "Admin":
+    st.header("Admin Section")
+
+    admin_tab = st.radio("Choose Action", ["Menu Management", "View Orders", "View Customers", "View Reviews"])
+
+    # ---------------- Menu Management ----------------
+    if admin_tab == "Menu Management":
+        st.subheader("Add Menu Item")
+        name = st.text_input("Item Name")
+        price = st.number_input("Price", min_value=1.0, step=1.0)
+
+        if st.button("Add Item"):
+            cursor.execute("INSERT INTO menu (name, price) VALUES (?, ?)", (name, price))
+            conn.commit()
+            st.success("Item added to menu!")
+
+        st.subheader("Update Menu Item")
+        cursor.execute("SELECT id, name, price FROM menu")
+        menu_items = cursor.fetchall()
+        if menu_items:
+            item_dict = {f"{item[1]} (₹{item[2]})": item[0] for item in menu_items}
+            selected_item = st.selectbox("Select Item to Update", list(item_dict.keys()))
+
+            new_name = st.text_input("New Name")
+            new_price = st.number_input("New Price", min_value=1.0, step=1.0)
+
+            if st.button("Update Item"):
+                item_id = item_dict[selected_item]
+                if new_name.strip():
+                    cursor.execute("UPDATE menu SET name=? WHERE id=?", (new_name, item_id))
+                if new_price:
+                    cursor.execute("UPDATE menu SET price=? WHERE id=?", (new_price, item_id))
+                conn.commit()
+                st.success("Menu item updated successfully!")
         else:
-            st.info("Menu not available.")
+            st.info("No items in the menu yet.")
+
+        st.subheader("Menu Items")
+        cursor.execute("SELECT id, name, price FROM menu")
+        menu_items = cursor.fetchall()
+        if menu_items:
+            df_menu = pd.DataFrame(menu_items, columns=["Item ID", "Name", "Price"])
+            st.table(df_menu)
+        else:
+            st.info("Menu is empty.")
+
+    # ---------------- View Orders ----------------
+    elif admin_tab == "View Orders":
+        cursor.execute("SELECT * FROM orders")
+        orders = cursor.fetchall()
+        if orders:
+            df_orders = pd.DataFrame(orders, columns=["Order ID", "Customer ID", "Date", "UPI Number"])
+            st.table(df_orders)
+        else:
+            st.info("No orders placed yet.")
+
+    # ---------------- View Customers ----------------
+    elif admin_tab == "View Customers":
+        cursor.execute("SELECT * FROM customers")
+        customers = cursor.fetchall()
+        if customers:
+            df_customers = pd.DataFrame(customers, columns=["Customer ID", "Name", "Phone"])
+            st.table(df_customers)
+        else:
+            st.info("No customers registered yet.")
+
+    # ---------------- View Reviews ----------------
+    elif admin_tab == "View Reviews":
+        cursor.execute("""
+            SELECT m.name, AVG(r.rating) as avg_rating, COUNT(r.id) as total_reviews
+            FROM reviews r
+            JOIN menu m ON r.item_id = m.id
+            GROUP BY m.id
+        """)
+        reviews = cursor.fetchall()
+        if reviews:
+            df_reviews = pd.DataFrame(reviews, columns=["Item", "Average Rating", "Total Reviews"])
+            st.table(df_reviews)
+        else:
+            st.info("No reviews submitted yet.")
+                                    
